@@ -850,10 +850,11 @@ class AbstractAccount:
         self._logger.debug("stopping account %s", self)
         if self._network:
             # Unsubscribe from the account's existing subscriptions.
-            future = self._network.subscriptions.remove_owner(self._subscription_owner_for_keys)
-            if future is not None:
+            futures = self._network.subscriptions.remove_owner(self._subscription_owner_for_keys)
+            # We could call `concurrent.futures.wait` on the list, but we want to raise if there
+            # is an exception. It should never happen.
+            for future in futures:
                 future.result()
-            self._network = None
 
     def register_for_keyinstance_events(self, keyinstances: List[KeyInstanceRow]) -> None:
         assert self._network is not None
@@ -1653,8 +1654,10 @@ class DeterministicAccount(AbstractAccount):
             self._gap_limit_observer_future.cancel()
             assert self._subscription_owner_for_gap_limit is not None
             # Unsubscribe from the account's existing subscriptions.
-            future = network.subscriptions.remove_owner(self._subscription_owner_for_gap_limit)
-            if future is not None:
+            futures = network.subscriptions.remove_owner(self._subscription_owner_for_gap_limit)
+            # We could call `concurrent.futures.wait` on the list, but we want to raise if there
+            # is an exception. It should never happen.
+            for future in futures:
                 future.result()
 
     def sign_message(self, key_data: KeyDataProtocol, message: bytes, password: str) -> bytes:

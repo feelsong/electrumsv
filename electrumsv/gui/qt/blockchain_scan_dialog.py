@@ -16,9 +16,10 @@ from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel, QLayout, 
     QWidget)
 
 from ...app_state import app_state
-from ...constants import CHANGE_SUBPATH, DerivationPath, RECEIVING_SUBPATH, TransactionImportFlag, \
-    TxFlags
-from ...blockchain_scanner import AdvancedSettings, DEFAULT_GAP_LIMITS, Scanner
+from ...constants import CHANGE_SUBPATH, DerivationPath, RECEIVING_SUBPATH, \
+    TransactionImportFlag, TxFlags
+from ...blockchain_scanner import AdvancedSettings, DEFAULT_GAP_LIMITS, BlockchainScanner, \
+    ScriptHasher, ScriptHashHandler, SearchKeyEnumerator
 from ...i18n import _
 from ...logs import logs
 from ...wallet import Wallet
@@ -181,10 +182,16 @@ class BlockchainScanDialog(WindowModalDialog):
             self._scan_button.setVisible(False)
             self._advanced_button.setVisible(False)
         else:
+            assert self._wallet._network is not None
             account = self._wallet.get_account(account_id)
             assert account is not None
-            self._scanner = Scanner.from_account(account,
-                settings=self._advanced_settings,
+            item_hasher = ScriptHasher()
+            search_enumerator = SearchKeyEnumerator(item_hasher, self._advanced_settings)
+            search_enumerator.use_account(account)
+            wallet_id = account.get_wallet().get_id()
+            account_id = account.get_id()
+            self._scan_handler = ScriptHashHandler(self._wallet._network, wallet_id, account_id)
+            self._scanner = BlockchainScanner(self.scan_handler, search_enumerator,
                 extend_range_cb=self._on_scanner_range_extended)
 
             # We do not have to forceably stop this timer if the dialog is closed. It's lifecycle
@@ -193,7 +200,7 @@ class BlockchainScanDialog(WindowModalDialog):
 
             self.import_step_signal.connect(self._update_for_import_step)
 
-            self.attempt_import_icon = read_QIcon("icons8-add-green-48-ui.png")
+            self._attempt_import_icon = read_QIcon("icons8-add-green-48-ui.png")
             self._conflicted_tx_icon = read_QIcon("icons8-error-48-ui.png")
             self._imported_tx_icon = read_QIcon("icons8-add-grey-48-ui.png")
 
@@ -347,11 +354,15 @@ class BlockchainScanDialog(WindowModalDialog):
                 future.add_done_callback(self._on_import_obtain_transactions_started)
 
             if len(link_tx_hashes):
+                # We store these to track what we are waiting for.
                 self._import_link_hashes = link_tx_hashes
-                self._import_link_future = app_state.async_.spawn(
-                    self._import_immediately_linkable_transactions, link_tx_hashes)
+                app_state.async_.spawn(self._import_immediately_linkable_transactions,
+                    link_tx_hashes)
 
     async def _import_immediately_linkable_transactions(self, link_tx_hashes: Set[bytes]) -> None:
+        """
+        Worker task to link each transaction that is already present in the wallet.
+        """
         # Cannot hurt to verify that our action is still viable.
         if link_tx_hashes != self._import_link_hashes:
             return
@@ -471,7 +482,7 @@ class BlockchainScanDialog(WindowModalDialog):
             # Continual updates for `DISCOVERY` stage.
             # Initial update for `PRE_IMPORT` stage.
             tx_hashes: Dict[str, int] = defaultdict(int)
-            for history_item in self._scanner.get_scan_results().values():
+            for history_item in self._scan_handler.get_results().values():
                 for result in history_item.history:
                     tx_hashes[cast(str, result["tx_hash"])] += 1
             transaction_count = len(tx_hashes)
@@ -482,7 +493,7 @@ class BlockchainScanDialog(WindowModalDialog):
                 self._about_label.setText(TEXT_SCAN.format(transaction_count,
                     seconds_passed))
                 if self._last_range > 0:
-                    self._progress_bar.setValue(self._scanner.get_result_count())
+                    self._progress_bar.setValue(self._scan_handler.get_result_count())
             elif self._stage == ScanDialogStage.PRE_IMPORT:
                 self._about_label.setText(TEXT_PRE_IMPORT.format(transaction_count))
         elif self._stage == ScanDialogStage.NO_IMPORT:
@@ -501,6 +512,9 @@ class BlockchainScanDialog(WindowModalDialog):
                 self._about_label.setText(TEXT_FINAL_FAILURE.format(failed_import))
 
     def _on_scan_complete(self, future: concurrent.futures.Future[None]) -> None:
+        """
+        The callback the blockchain scanner calls when the scanning process is completed.
+        """
         if future.cancelled():
             logger.debug("_on_scan_complete.cancelled")
             return
@@ -519,7 +533,7 @@ class BlockchainScanDialog(WindowModalDialog):
         all_tx_hashes: List[bytes] = []
         subpath_indexes: Dict[DerivationPath, int] = defaultdict(int)
         self._import_state = {}
-        for script_hash, script_history in self._scanner.get_scan_results().items():
+        for script_hash, script_history in self._scan_handler.get_results().items():
             # TODO Look into why there are empty script history lists. This seems like a minor
             #     thing that could be fixed.
             if len(script_history.history) == 0:
@@ -632,7 +646,7 @@ class BlockchainScanDialog(WindowModalDialog):
                 tree_item.setToolTip(Columns.STATUS, _("This transaction is already imported."))
             else:
                 # This is both missing and present and not associated with account transactions.
-                tree_item.setIcon(Columns.STATUS, self.attempt_import_icon)
+                tree_item.setIcon(Columns.STATUS, self._attempt_import_icon)
                 tree_item.setToolTip(Columns.STATUS, _("An attempt can be made to import this "
                     "transaction."))
             tree_item.setData(Columns.STATUS, ImportRoles.ENTRY, entry)

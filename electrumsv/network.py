@@ -1,4 +1,4 @@
- # ElectrumSV - lightweight Bitcoin SV client
+# ElectrumSV - lightweight Bitcoin SV client
 # Copyright (C) 2019-2020 The ElectrumSV Developers
 # Copyright (c) 2011-2016 Thomas Voegtlin
 #
@@ -55,7 +55,7 @@ from .networks import Net
 from .subscription import SubscriptionManager
 from .transaction import Transaction
 from .types import ElectrumXHistoryList, IndefiniteCredentialId, NetworkServerState, \
-    ScriptHashSubscriptionEntry, ServerAccountKey
+    HashSubscriptionEntry, ServerAccountKey
 from .util import chunks, JSON, protocol_tuple, TriggeredCallbacks, version_string
 from .version import PACKAGE_VERSION, PROTOCOL_MIN, PROTOCOL_MAX
 
@@ -911,7 +911,7 @@ class SVSession(RPCSession): # type: ignore
         item = (script_hash_hex, status)
         self._network._on_status_queue.put_nowait(item)
 
-    async def subscribe_to_script_hashes(self, entries: List[ScriptHashSubscriptionEntry],
+    async def subscribe_to_script_hashes(self, entries: List[HashSubscriptionEntry],
             initial_subscription: bool=False) -> None:
         '''Raises: RPCError, TaskTimeout'''
         # Ensure that we ignore the subscription requests that happen before we get the initial
@@ -927,12 +927,12 @@ class SVSession(RPCSession): # type: ignore
 
         async with TaskGroup() as group:
             for entry in entries:
-                self._script_hash_ids[entry.script_hash] = entry.entry_id
+                self._script_hash_ids[entry.hash_value] = entry.entry_id
 
-                script_hash_hex = hash_to_hex_str(entry.script_hash)
+                script_hash_hex = hash_to_hex_str(entry.hash_value)
                 await group.spawn(self._subscribe_to_script_hash(script_hash_hex))
 
-    async def unsubscribe_from_script_hashes(self, entries: List[ScriptHashSubscriptionEntry]) \
+    async def unsubscribe_from_script_hashes(self, entries: List[HashSubscriptionEntry]) \
             -> None:
         """
         Unsubscribe from the given script hashes.
@@ -948,9 +948,9 @@ class SVSession(RPCSession): # type: ignore
 
         async with TaskGroup() as group:
             for entry in entries:
-                del self._script_hash_ids[entry.script_hash]
+                del self._script_hash_ids[entry.hash_value]
 
-                script_hash_hex = hash_to_hex_str(entry.script_hash)
+                script_hash_hex = hash_to_hex_str(entry.hash_value)
                 await group.spawn(self._unsubscribe_from_script_hash(script_hash_hex))
 
 
@@ -1168,7 +1168,7 @@ class Network(TriggeredCallbacks):
                 await self.sessions_changed_event.wait()
             await self._maybe_switch_main_server(SwitchReason.lagging)
 
-    async def _on_subscribe_script_hashes(self, entries: List[ScriptHashSubscriptionEntry]) -> None:
+    async def _on_subscribe_script_hashes(self, entries: List[HashSubscriptionEntry]) -> None:
         """
         Process wallet script hash subscription requests.
 
@@ -1181,7 +1181,7 @@ class Network(TriggeredCallbacks):
             session.logger.debug('Subscribing to %d script hashes', len(entries))
             await session.subscribe_to_script_hashes(entries)
 
-    async def _on_unsubscribe_script_hashes(self, entries: List[ScriptHashSubscriptionEntry]) \
+    async def _on_unsubscribe_script_hashes(self, entries: List[HashSubscriptionEntry]) \
             -> None:
         """
         Process wallet script hash unsubscription requests.
@@ -1675,17 +1675,19 @@ class Network(TriggeredCallbacks):
         # These are all the available API servers registered within the application.
         return self._api_servers
 
-    def get_api_servers_for_account(self, account: "AbstractAccount") \
-            -> List[Tuple[NewServer, Optional[IndefiniteCredentialId]]]:
+    def get_api_servers_for_account(self, account: "AbstractAccount",
+            server_type: NetworkServerType) \
+                -> List[Tuple[NewServer, Optional[IndefiniteCredentialId]]]:
         wallet = account.get_wallet()
         client_key = NewServerAPIContext(wallet.get_storage_path(), account.get_id())
 
         results: List[Tuple[NewServer, Optional[IndefiniteCredentialId]]] = []
         for api_server in self._api_servers.values():
-            have_credential, credential_id = api_server.get_credential_id(client_key)
-            # TODO(API) What about putting the client api context in the result.
-            if have_credential:
-                results.append((api_server, credential_id))
+            if api_server.server_type == server_type:
+                have_credential, credential_id = api_server.get_credential_id(client_key)
+                # TODO(API) What about putting the client api context in the result.
+                if have_credential:
+                    results.append((api_server, credential_id))
         return results
 
     def is_server_disabled(self, url: str, server_type: NetworkServerType) -> bool:

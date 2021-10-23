@@ -247,6 +247,9 @@ class KeyInstanceFlag(IntFlag):
 class SubscriptionType(IntEnum):
     NONE = 0
     SCRIPT_HASH = 1
+    PUSHDATA_HASH = 2
+
+BYTE_SUBSCRIPTION_TYPES = { SubscriptionType.SCRIPT_HASH, SubscriptionType.PUSHDATA_HASH }
 
 
 class SubscriptionOwnerPurpose(IntEnum):
